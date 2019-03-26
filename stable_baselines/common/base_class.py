@@ -196,7 +196,6 @@ class BaseRLModel(ABC):
             else:
                 val_interval = int(n_epochs / 10)
 
-
         with self.graph.as_default():
             with tf.variable_scope('pretrain'):
                 if continuous_actions:
@@ -209,9 +208,9 @@ class BaseRLModel(ABC):
                     actions_ph = tf.expand_dims(actions_ph, axis=1)
                     one_hot_actions = tf.one_hot(actions_ph, self.action_space.n)
                     loss = tf.nn.softmax_cross_entropy_with_logits_v2(
-                            logits=actions_logits_ph,
-                            labels=tf.stop_gradient(one_hot_actions)
-                            )
+                        logits=actions_logits_ph,
+                        labels=tf.stop_gradient(one_hot_actions)
+                    )
                     loss = tf.reduce_mean(loss)
                 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate, epsilon=adam_epsilon)
                 optim_op = optimizer.minimize(loss, var_list=self.params)

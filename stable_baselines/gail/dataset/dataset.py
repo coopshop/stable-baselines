@@ -29,6 +29,7 @@ class ExpertDataset(object):
     :param sequential_preprocessing: (bool) Do not use subprocess to preprocess
         the data (slower but use less memory for the CI)
     """
+
     def __init__(self, expert_path, train_fraction=0.7, batch_size=64,
                  traj_limitation=-1, randomize=True, verbose=1,
                  sequential_preprocessing=False):
@@ -66,23 +67,13 @@ class ExpertDataset(object):
             actions = np.reshape(actions, [-1, np.prod(actions.shape[1:])])
 
         indices = np.random.permutation(len(observations)).astype(np.int64)
-        # split indices into minibatches. minibatchlist is a list of lists; each
-        # list is the id of the observation preserved through the training
-        minibatchlist = [np.array(sorted(indices[start_idx:start_idx + batch_size]))
-                         for start_idx in range(0, len(indices) - batch_size + 1, batch_size)]
 
-        minibatchlist = np.array(minibatchlist)
-        # Number of minibatches used for training
-        n_train_batches = np.round(train_fraction * len(minibatchlist)).astype(np.int64)
-        minibatches_indices = np.random.permutation(len(minibatchlist))
         # Train/Validation split when using behavior cloning
-        train_indices = minibatches_indices[:n_train_batches]
-        val_indices = minibatches_indices[n_train_batches:]
-        minibatchlist_train = minibatchlist[train_indices]
-        minibatchlist_val = minibatchlist[val_indices]
+        train_indices = indices[:int(train_fraction * len(indices))]
+        val_indices = indices[int(train_fraction * len(indices)):]
 
-        assert len(train_indices) > 0
-        assert len(val_indices) > 0
+        assert len(train_indices) > 0, "No sample for the training set"
+        assert len(val_indices) > 0, "No sample for the validation set"
 
         self.observations = observations
         self.actions = actions
@@ -92,18 +83,18 @@ class ExpertDataset(object):
         self.std_ret = np.std(np.array(self.returns))
         self.verbose = verbose
 
-        assert len(self.observations) == len(self.actions)
+        assert len(self.observations) == len(self.actions), "The number of actions and observations differ " \
+                                                            "please check your expert dataset"
         self.num_traj = min(traj_limitation, np.sum(episode_starts))
         self.num_transition = len(self.observations)
         self.randomize = randomize
-        self.minibatchlist = minibatchlist
         self.sequential_preprocessing = sequential_preprocessing
 
         self.dataloader = None
-        self.train_loader = DataLoader(minibatchlist_train, self.observations, self.actions,
+        self.train_loader = DataLoader(train_indices, self.observations, self.actions, batch_size,
                                        shuffle=self.randomize, start_process=False,
                                        sequential=sequential_preprocessing)
-        self.val_loader = DataLoader(minibatchlist_val, self.observations, self.actions,
+        self.val_loader = DataLoader(val_indices, self.observations, self.actions, batch_size,
                                      shuffle=self.randomize, start_process=False,
                                      sequential=sequential_preprocessing)
 
@@ -117,16 +108,7 @@ class ExpertDataset(object):
         :param batch_size: (int)
         """
         indices = np.random.permutation(len(self.observations)).astype(np.int64)
-        # split indices into minibatches. minibatchlist is a list of lists; each
-        # list is the id of the observation preserved through the training
-        minibatchlist = [np.array(sorted(indices[start_idx:start_idx + batch_size]))
-                         for start_idx in range(0, len(indices) - batch_size + 1, batch_size)]
-
-        # TODO: add keyword allow_partial batch
-        # equivalent to batch_size > len(observations)
-        if len(minibatchlist) == 0:
-            minibatchlist = [np.arange(len(self.observations)).astype(np.int64)]
-        self.dataloader = DataLoader(minibatchlist, self.observations, self.actions,
+        self.dataloader = DataLoader(indices, self.observations, self.actions, batch_size,
                                      shuffle=self.randomize, start_process=False,
                                      sequential=self.sequential_preprocessing)
 
@@ -186,9 +168,10 @@ class DataLoader(object):
     (MIT licence)
     Authors: Antonin Raffin, René Traoré, Ashley Hill
 
-    :param minibatchlist: ([np.ndarray]) list of observations indices (grouped per minibatch)
+    :param indices: ([int]) list of observations indices
     :param observations: (np.ndarray) observations or images path
     :param actions: (np.ndarray) actions
+    :param batch_size: (int) Number of samples per minibatch
     :param n_workers: (int) number of preprocessing worker (for loading the images)
     :param infinite_loop: (bool) whether to have an iterator that can be resetted
     :param max_queue_len: (int) Max number of minibatches that can be preprocessed at the same time
@@ -198,15 +181,24 @@ class DataLoader(object):
         or 'loky' in newest versions)
     :param sequential: (bool) Do not use subprocess to preprocess the data
         (slower but use less memory for the CI)
+    :param partial_minibatch: (bool) Allow partial minibatches (minibatches with a number of element
+        lesser than the batch_size)
     """
-    def __init__(self, minibatchlist, observations, actions, n_workers=1,
+
+    def __init__(self, indices, observations, actions, batch_size, n_workers=1,
                  infinite_loop=True, max_queue_len=1, shuffle=False,
-                 start_process=True, backend='threading', sequential=False):
+                 start_process=True, backend='threading', sequential=False, partial_minibatch=True):
         super(DataLoader, self).__init__()
         self.n_workers = n_workers
         self.infinite_loop = infinite_loop
-        self.n_minibatches = len(minibatchlist)
-        self.minibatchlist = minibatchlist
+        self.indices = indices
+        self.original_indices = indices.copy()
+        self.n_minibatches = len(indices) // batch_size
+        # Add a partial minibatch, for instance
+        # when there is not enough samples
+        if partial_minibatch and len(indices) / batch_size > 0:
+            self.n_minibatches += 1
+        self.batch_size = batch_size
         self.observations = observations
         self.actions = actions
         self.shuffle = shuffle
@@ -215,8 +207,7 @@ class DataLoader(object):
         self.load_images = isinstance(observations[0], str)
         self.backend = backend
         self.sequential = sequential
-        self.indices = None
-        self.current_minibatch_idx = 0
+        self.start_idx = 0
         if start_process:
             self.start_process()
 
@@ -231,27 +222,34 @@ class DataLoader(object):
         self.process.daemon = True
         self.process.start()
 
+    @property
+    def _minibatch_indices(self):
+        """
+        Current minibatch indices given the current pointer
+        (start_idx) and the minibatch size
+        :return: (np.ndarray) 1D array of indices
+        """
+        return self.indices[self.start_idx:self.start_idx + self.batch_size]
+
     def sequential_next(self):
         """
         Sequential version of the pre-processing.
         """
-        if self.current_minibatch_idx == len(self):
+        if self.start_idx > len(self.indices):
             raise StopIteration
 
-        if self.current_minibatch_idx == 0:
+        if self.start_idx == 0:
             if self.shuffle:
-                self.indices = np.random.permutation(self.n_minibatches).astype(np.int64)
-            else:
-                self.indices = np.arange(len(self.minibatchlist), dtype=np.int64)
+                # Shuffle indices
+                np.random.shuffle(self.indices)
 
-        obs = self.observations[self.minibatchlist[self.current_minibatch_idx]]
+        obs = self.observations[self._minibatch_indices]
         if self.load_images:
-            obs = [self._make_batch_element(image_path)
-                   for image_path in obs]
-            obs = np.concatenate(obs, axis=0)
+            obs = np.concatenate([self._make_batch_element(image_path) for image_path in obs],
+                                 axis=0)
 
-        actions = self.actions[self.minibatchlist[self.current_minibatch_idx]]
-        self.current_minibatch_idx += 1
+        actions = self.actions[self._minibatch_indices]
+        self.start_idx += self.batch_size
         return obs, actions
 
     def _run(self):
@@ -261,13 +259,13 @@ class DataLoader(object):
                 start = False
 
                 if self.shuffle:
-                    indices = np.random.permutation(self.n_minibatches).astype(np.int64)
-                else:
-                    indices = np.arange(len(self.minibatchlist), dtype=np.int64)
+                    np.random.shuffle(self.indices)
 
-                for minibatch_idx in indices:
+                for minibatch_idx in range(self.n_minibatches):
 
-                    obs = self.observations[self.minibatchlist[minibatch_idx]]
+                    self.start_idx = minibatch_idx * self.batch_size
+
+                    obs = self.observations[self._minibatch_indices]
                     if self.load_images:
                         if self.n_workers <= 1:
                             obs = [self._make_batch_element(image_path)
@@ -279,7 +277,7 @@ class DataLoader(object):
 
                         obs = np.concatenate(obs, axis=0)
 
-                    actions = self.actions[self.minibatchlist[minibatch_idx]]
+                    actions = self.actions[self._minibatch_indices]
 
                     self.queue.put((obs, actions))
 
@@ -315,7 +313,8 @@ class DataLoader(object):
         return self.n_minibatches
 
     def __iter__(self):
-        self.current_minibatch_idx = 0
+        self.start_idx = 0
+        self.indices = self.original_indices.copy()
         return self
 
     def __next__(self):
