@@ -5,10 +5,11 @@ import cv2
 import numpy as np
 from gym import spaces
 
+from stable_baselines.common.base_class import BaseRLModel
 from stable_baselines.common.vec_env import VecEnv, VecFrameStack
 
 
-def generate_expert_traj(model, save_path, n_timesteps=0,
+def generate_expert_traj(model, save_path, env=None, n_timesteps=0,
                          n_episodes=100, image_folder='recorded_images'):
     """
     Train expert controller (if needed) and record expert trajectories.
@@ -17,17 +18,22 @@ def generate_expert_traj(model, save_path, n_timesteps=0,
 
         only Box and Discrete spaces are supported for now.
 
-    :param model: (RL model) The expert model, if it needs to be trained,
+    :param model: (RL model or callable) The expert model, if it needs to be trained,
         then you need to pass ``n_timesteps > 0``.
     :param save_path: (str) Path without the extension where the
         expert dataset will be saved (ex: 'expert_cartpole' -> creates 'expert_cartpole.npz')
+    :param env: (gym.Env) The environment, if not defined then it tries to use the model
+        environment.
     :param n_timesteps: (int) Number of training timesteps
     :param n_episodes: (int) Number of trajectories (episodes) to record
     :param image_folder: (str) When using images, folder that will be used to record images.
     """
-    env = model.get_env()
 
-    assert env is not None, "You must set the env in the model"
+    # Retrieve the environment using the RL model
+    if env is None and isinstance(model, BaseRLModel):
+        env = model.get_env()
+
+    assert env is not None, "You must set the env in the model or pass it to the function."
 
     is_vec_env = False
     if isinstance(env, VecEnv):
@@ -67,7 +73,7 @@ def generate_expert_traj(model, save_path, n_timesteps=0,
         print("Image shape: {}".format(obs_space.shape))
         print("=" * 10)
 
-    if n_timesteps > 0:
+    if n_timesteps > 0 and isinstance(model, BaseRLModel):
         model.learn(n_timesteps)
 
     actions = []
@@ -93,7 +99,12 @@ def generate_expert_traj(model, save_path, n_timesteps=0,
             observations.append(image_path)
         else:
             observations.append(obs)
-        action, _ = model.predict(obs)
+
+        if isinstance(model, BaseRLModel):
+            action, _ = model.predict(obs)
+        else:
+            action = model(obs)
+
         obs, reward, done, _ = env.step(action)
 
         actions.append(action)

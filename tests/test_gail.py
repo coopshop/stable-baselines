@@ -49,6 +49,17 @@ def test_generate_cartpole():
     generate_expert_traj(model, 'expert_cartpole', n_timesteps=1000, n_episodes=10)
 
 
+def test_generate_callable():
+    """
+    Test generating expert trajectories with a callable.
+    """
+    env = gym.make("CartPole-v1")
+    # Here the expert is a random agent
+    def dummy_expert(_obs):
+        return env.action_space.sample()
+    generate_expert_traj(dummy_expert, 'dummy_expert_cartpole', env, n_timesteps=0, n_episodes=10)
+
+
 # @pytest.mark.parametrize("model_class", [A2C, ACER, ACKTR, DQN, PPO1, PPO2, TRPO])
 def test_pretrain_images():
     env = make_atari_env("PongNoFrameskip-v4", num_env=1, seed=0)

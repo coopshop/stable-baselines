@@ -35,6 +35,7 @@ Here, we are going to train a RL model and then generate expert trajectories
 using this agent.
 
 Note that in practice, generating expert trajectories usually does not require training an RL agent.
+
 The following example is only meant to demonstrate the ``pretrain()`` feature.
 
 However, we recommend users to take a look at the code of the ``generate_expert_traj()`` function (located in ``gail/dataset/`` folder)
@@ -50,6 +51,36 @@ to learn about the data structure of the expert dataset (see below for an overvi
 	# Train a DQN agent for 1e5 timesteps and generate 10 trajectories
 	# data will be saved in a numpy archive named `expert_cartpole.npz`
   generate_expert_traj(model, 'expert_cartpole', n_timesteps=int(1e5), n_episodes=10)
+
+
+
+Here is an additional example when the expert controller is a callable,
+that is passed to the function instead of a RL model.
+The idea is that this callable can be a PID controller, asking a human player, ...
+
+
+.. code-block:: python
+
+		import gym
+
+		from stable_baselines.gail import generate_expert_traj
+
+		env = gym.make("CartPole-v1")
+		# Here the expert is a random agent
+		# but it can be any python function, e.g. a PID controller
+		def dummy_expert(_obs):
+		    """
+		    Random agent. It samples actions randomly
+		    from the action space of the environment.
+
+		    :param _obs: (np.ndarray) Current observation
+		    :return: (np.ndarray) action taken by the expert
+		    """
+		    return env.action_space.sample()
+		# Data will be saved in a numpy archive named `expert_cartpole.npz`
+		# when using something different than an RL expert,
+		# you must pass the environment object explicitely
+		generate_expert_traj(dummy_expert, 'dummy_expert_cartpole', env, n_episodes=10)
 
 
 
